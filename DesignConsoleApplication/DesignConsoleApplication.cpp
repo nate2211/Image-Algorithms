@@ -220,51 +220,6 @@ void applyAdaptiveThresholding(const std::string& filename) {
 }
 
 
-void applyWatershedSegmentation(const std::string& filename) {
-    cv::Mat image = cv::imread(filename);
-    if (image.empty()) {
-        std::cerr << "Error: Could not load image!" << std::endl;
-        return;
-    }
-
-    cv::Mat gray, binary;
-    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY_INV + cv::THRESH_OTSU);
-
-    cv::Mat distTransform;
-    cv::distanceTransform(binary, distTransform, cv::DIST_L2, 5);
-    cv::normalize(distTransform, distTransform, 0, 1.0, cv::NORM_MINMAX);
-    cv::threshold(distTransform, distTransform, 0.5, 1.0, cv::THRESH_BINARY);
-
-    cv::Mat sureForeground;
-    distTransform.convertTo(sureForeground, CV_8U, 255);
-    cv::Mat sureBackground;
-    cv::dilate(binary, sureBackground, cv::Mat(), cv::Point(-1, -1), 3);
-    sureBackground = 255 - sureBackground;
-
-    cv::Mat markers;
-    cv::connectedComponents(sureForeground, markers);
-    markers += 1;
-    markers.setTo(0, sureBackground);
-
-    cv::watershed(image, markers);
-    cv::Mat segmented = cv::Mat::zeros(image.size(), CV_8UC3);
-
-    for (int i = 0; i < markers.rows; i++) {
-        for (int j = 0; j < markers.cols; j++) {
-            if (markers.at<int>(i, j) == -1) {
-                segmented.at<cv::Vec3b>(i, j) = cv::Vec3b(0, 0, 255);
-            }
-            else {
-                segmented.at<cv::Vec3b>(i, j) = image.at<cv::Vec3b>(i, j);
-            }
-        }
-    }
-
-    cv::imwrite("watershed_segmented.png", segmented);
-    cv::imshow("Watershed Segmentation", segmented);
-    cv::waitKey(0);
-}
 
 
 int main() {
