@@ -219,7 +219,169 @@ void applyAdaptiveThresholding(const std::string& filename) {
     cv::waitKey(0);
 }
 
+void computeGradientEquation(const std::string& filename) {
+    cv::Mat image = cv::imread(filename, cv::IMREAD_GRAYSCALE);
+    if (image.empty()) {
+        std::cerr << "Error: Could not load image!" << std::endl;
+        return;
+    }
 
+    // Compute gradients in X and Y directions
+    cv::Mat gradX, gradY;
+    cv::Sobel(image, gradX, CV_64F, 1, 0, 3);
+    cv::Sobel(image, gradY, CV_64F, 0, 1, 3);
+
+    // Get user input for a point
+    int x0, y0;
+    std::cout << "Enter the point (x y) to compute the tangent line segmentation: ";
+    std::cin >> x0 >> y0;
+
+    // Ensure the point is within bounds
+    if (x0 < 0 || x0 >= image.cols || y0 < 0 || y0 >= image.rows) {
+        std::cerr << "Error: Point is outside image bounds!" << std::endl;
+        return;
+    }
+
+    // Get the gradient at the chosen point
+    double Gx = gradX.at<double>(y0, x0);
+    double Gy = gradY.at<double>(y0, x0);
+
+    if (Gx == 0 && Gy == 0) {
+        std::cerr << "Gradient is zero at this point. No meaningful segmentation." << std::endl;
+        return;
+    }
+
+    // Compute the tangent line equation: y = slope * x + intercept
+    double slope = (Gx != 0) ? Gy / Gx : std::numeric_limits<double>::infinity();
+    double intercept = y0 - slope * x0;
+
+    std::cout << "Tangent line equation: y = " << slope << " * x + " << intercept << std::endl;
+
+    // Convert image to color for visualization
+    cv::Mat colorImage;
+    cv::cvtColor(image, colorImage, cv::COLOR_GRAY2BGR);
+
+    // Overlay segmentation on original image
+    for (int y = 0; y < image.rows; y++) {
+        for (int x = 0; x < image.cols; x++) {
+            double tangentY = slope * x + intercept;
+            if (y < tangentY) {
+                colorImage.at<cv::Vec3b>(y, x)[0] = std::min(255, colorImage.at<cv::Vec3b>(y, x)[0] + 100); // Enhance blue
+            }
+            else {
+                colorImage.at<cv::Vec3b>(y, x)[1] = std::min(255, colorImage.at<cv::Vec3b>(y, x)[1] + 100); // Enhance green
+            }
+        }
+    }
+
+    // Draw the tangent line on the image
+    cv::line(colorImage, cv::Point(0, intercept), cv::Point(image.cols - 1, slope * (image.cols - 1) + intercept),
+        cv::Scalar(0, 0, 255), 2);
+
+    cv::imwrite("tangent_segmented.png", colorImage);
+    cv::imshow("Tangent Line Segmentation", colorImage);
+    cv::waitKey(0);
+}
+
+void applySVDImageSegmentation(const std::string& filename) {
+    cv::Mat image = cv::imread(filename, cv::IMREAD_GRAYSCALE);
+    if (image.empty()) {
+        std::cerr << "Error: Could not load image!" << std::endl;
+        return;
+    }
+
+    int rank;
+    std::cout << "Enter number for rank: ";
+    std::cin >> rank;
+
+    // Convert image to float for SVD computation
+    cv::Mat imageFloat;
+    image.convertTo(imageFloat, CV_32F);
+
+    // Perform SVD (U * S * Vt)
+    cv::Mat U, S, Vt;
+    cv::SVD::compute(imageFloat, S, U, Vt);
+
+    // Ensure rank does not exceed possible values
+    rank = std::min(rank, S.rows);
+
+    // Convert S from a vector to a diagonal matrix
+    cv::Mat S_diag = cv::Mat::zeros(U.cols, Vt.rows, CV_32F);
+    for (int i = 0; i < rank; i++) {
+        S_diag.at<float>(i, i) = S.at<float>(i, 0);
+    }
+
+    // Reconstruct the image using the top 'rank' singular values
+    cv::Mat reconstructed = U * S_diag * Vt;
+    reconstructed.convertTo(reconstructed, CV_8U);
+
+    // Save and display the segmented image
+    cv::imwrite("svd_segmented.png", reconstructed);
+    cv::imshow("SVD Segmented Image", reconstructed);
+    cv::waitKey(0);
+}
+
+cv::Mat DCTSegmentation(const cv::Mat& input, int rank) {
+    if (input.empty()) {
+        std::cerr << "Error: Could not load image!" << std::endl;
+        return cv::Mat();
+    }
+
+    // Convert to floating point for DCT processing
+    cv::Mat floatImg;
+    input.convertTo(floatImg, CV_32F);
+
+    // Ensure image size is optimal for DCT (power of 2 preferred)
+    int optimalRows = cv::getOptimalDFTSize(floatImg.rows);
+    int optimalCols = cv::getOptimalDFTSize(floatImg.cols);
+
+    cv::Mat padded;
+    cv::copyMakeBorder(floatImg, padded, 0, optimalRows - floatImg.rows, 0, optimalCols - floatImg.cols, cv::BORDER_CONSTANT, 0);
+
+    // Perform forward DCT
+    cv::Mat dctCoeffs;
+    cv::dct(padded, dctCoeffs);
+
+    // Rank-based filtering: Zero-out high frequencies
+    int keepRows = std::min(rank, dctCoeffs.rows);
+    int keepCols = std::min(rank, dctCoeffs.cols);
+
+    cv::Mat mask = cv::Mat::zeros(dctCoeffs.size(), CV_32F);
+    mask(cv::Rect(0, 0, keepCols, keepRows)) = 1.0f;  // Retain only low frequencies
+
+    dctCoeffs = dctCoeffs.mul(mask);
+
+    // Perform inverse DCT
+    cv::Mat reconstructed;
+    cv::idct(dctCoeffs, reconstructed);
+
+    // Crop back to original size
+    reconstructed = reconstructed(cv::Rect(0, 0, input.cols, input.rows));
+
+    // Normalize and convert back to 8-bit grayscale
+    cv::normalize(reconstructed, reconstructed, 0, 255, cv::NORM_MINMAX);
+    reconstructed.convertTo(reconstructed, CV_8U);
+
+    return reconstructed;
+}
+void applyDCTSegmentation(const std::string& filename) {
+    cv::Mat image = cv::imread(filename, cv::IMREAD_GRAYSCALE);
+    if (image.empty()) {
+        std::cerr << "Error: Could not load image!" << std::endl;
+        return;
+    }
+
+    int rank;
+    std::cout << "Enter number for rank: ";
+    std::cin >> rank;
+
+    cv::Mat segmented = DCTSegmentation(image, rank);
+
+    // Save and display the segmented image
+    cv::imwrite("dct_segmented.png", segmented);
+    cv::imshow("DCT Segmented Image", segmented);
+    cv::waitKey(0);;
+}
 
 
 int main() {
@@ -240,7 +402,10 @@ int main() {
         std::cout << "4. Region growing Segmentation\n";
         std::cout << "5. Graph Cut\n";
         std::cout << "6. Adaptive Threshold\n";
-        std::cout << "7. Exit\n";
+        std::cout << "7. Gradient Equation\n";
+        std::cout << "8. SVD Segmentation\n";
+        std::cout << "9. DCT Segmentation\n";
+        std::cout << "10. Exit\n";
         std::cout << "Enter your choice: ";
         std::cin >> choice;
 
@@ -264,6 +429,15 @@ int main() {
             applyAdaptiveThresholding(filename);
             break;
         case 7:
+            computeGradientEquation(filename);
+            break;
+        case 8:
+            applySVDImageSegmentation(filename);
+            break;
+        case 9:
+            applyDCTSegmentation(filename);
+            break;
+        case 10:
             return 0;
 
         default:
